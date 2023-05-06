@@ -12,7 +12,20 @@ from typing import Any, Optional, Tuple, Type
 
 from .common import LayerNorm2d
 
-
+# 这个 PromptEncoder 类实现了 prompt 的编码,为 mask解码器 提供prompt输入。它包含:
+# __init__ 方法:
+# 1. 输入参数:
+#     - embed_dim: prompt 的 embedding 维度
+#     - image_embedding_size: 图像 embedding 的空间大小，表示为(H, W)
+#     - input_image_size: 输入到图像编码器的填充后的图像尺寸，表示为 (H, W)。
+#     - mask_in_chans: 用于编码输入掩码的隐藏通道数
+#     - activation: 用于编码输入掩码的激活函数
+# 2. 记录 embed_dim、image_size 和 image_embedding_size。 
+# 3. 实例化 PositionEmbeddingRandom 作为位置 embedding 层 pe_layer。
+# 4. 实例化 4个 Embedding 层作为点 prompt 的 embedding,以及 not_a_point_embed 用于非点 prompt。
+# 5. 计算掩码输入大小 mask_input_size 为 (4 * image_embedding_size[0], 4 * image_embedding_size[1])。
+# 6. 实例化 mask_downscaling 为多个 Conv2d 和 LayerNorm2d 层,用于下采样和编码输入遮罩。
+# 7. 实例化 no_mask_embed 用于无掩码 prompt 的 embedding。
 class PromptEncoder(nn.Module):
     def __init__(
         self,
@@ -58,7 +71,14 @@ class PromptEncoder(nn.Module):
             nn.Conv2d(mask_in_chans, embed_dim, kernel_size=1),
         )
         self.no_mask_embed = nn.Embedding(1, embed_dim)
-
+    
+    # 这个 get_dense_pe 方法的作用是返回用于对点 prompt 进行编码的密集位置编码。它包含:
+    # 1. 调用 pe_layer(image_embedding_size) 得到形状为 (embed_dim)x(embedding_h)x(embedding_w) 的位置编码,
+    # image_embedding_size 是图像 embedding 的空间大小。
+    # 2. 使用 unsqueeze(0) 增加 batch 维度,得到形状为 1x(embed_dim)x(embedding_h)x(embedding_w) 的位置编码。
+    # 3. 返回该位置编码用于对点 prompt 进行编码。
+    # 所以,这个 get_dense_pe 方法的作用就是返回一个密集的位置编码,该位置编码具有和图像 embedding 相同的空间尺寸,
+    # 用于对点 prompt 进行位置编码,从而得到丰富的 prompt 表达。
     def get_dense_pe(self) -> torch.Tensor:
         """
         Returns the positional encoding used to encode point prompts,
@@ -70,6 +90,16 @@ class PromptEncoder(nn.Module):
         """
         return self.pe_layer(self.image_embedding_size).unsqueeze(0)
 
+    # 这个 _embed_points 方法的作用是对点 prompt 进行 embedding。它包含:
+    # 1. 将 points 中的坐标增加 0.5,将其移至像素中心。
+    # 2. 如果 pad 为 True,则会在 points 上追加一个坐标为 [0,0] 和 label 为 -1 的额外点, 并相应地扩充labels。这是用于当未提供 bbox 时的补齐。
+    # 3. 调用 pe_layer.forward_with_coords 对 points 进行位置编码,得到 point_embedding。
+    # 4. 将 point_embedding 中 label 为 -1 的点 embedding 设置为0。
+    # 5. 将 point_embedding 中label为 -1 的点 embedding 增加 not_a_point_embed 的权重。
+    # 6. 根据 label 为 0 或 1, 将相应的 point_embedding 增加 point_embeddings[0] 或 point_embeddings[1] 的权重。
+    # 7. 返回 point_embedding 作为点 prompt 的 embedding。
+    # 所以, 这个 _embed_points 方法实现了对点 prompt 的完整 embedding 过程。
+    # 它包含位置编码、分类 Embedding 和类别偏置, 可以得到表达丰富的点 prompt embedding。
     def _embed_points(
         self,
         points: torch.Tensor,
@@ -78,6 +108,8 @@ class PromptEncoder(nn.Module):
     ) -> torch.Tensor:
         """Embeds point prompts."""
         points = points + 0.5  # Shift to center of pixel
+        # 其中当prompt 不提供bbox时，会在提供point上再追加点[0,0]，label=-1的哑point，
+        # 使用的类别特征embedding为上边的代码的self.not_a_point_embed
         if pad:
             padding_point = torch.zeros((points.shape[0], 1, 2), device=points.device)
             padding_label = -torch.ones((labels.shape[0], 1), device=labels.device)
@@ -86,6 +118,7 @@ class PromptEncoder(nn.Module):
         point_embedding = self.pe_layer.forward_with_coords(points, self.input_image_size)
         point_embedding[labels == -1] = 0.0
         point_embedding[labels == -1] += self.not_a_point_embed.weight
+        # self.point_embeddings为待学习的embedding
         point_embedding[labels == 0] += self.point_embeddings[0].weight
         point_embedding[labels == 1] += self.point_embeddings[1].weight
         return point_embedding

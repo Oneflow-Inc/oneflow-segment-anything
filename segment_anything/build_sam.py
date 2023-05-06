@@ -51,6 +51,14 @@ sam_model_registry = {
     "vit_b": build_sam_vit_b,
 }
 
+# 这个代码定义了SAM(Segment Anything Model)的构建过程
+# 1. ImageEncoderViT: 这是SAM的图像编码器,使用ViT(Vision Transformer)作为backbone,用于提取图像特征。
+# 2. PromptEncoder: 这是SAM的提示编码器,用于编码文本提示,产生256维的提示embedding。
+# 3. MaskDecoder: 这是SAM的掩码解码器,用于根据图像特征和提示embedding生成掩码。它包含一个双向Transformer和IoU头。
+# 4. pixel_mean和pixel_std: 这些是图像均值和标准差,用于图像的归一化。
+# 5. sam.eval(): 将SAM设置为评估模式。
+# 6. checkpoint: 如果提供了检查点,则从中加载SAM的状态字典,用于加载预训练的模型。
+# 7. 返回构建好的SAM模型。
 
 def _build_sam(
     encoder_embed_dim,
