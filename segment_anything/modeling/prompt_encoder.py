@@ -24,7 +24,7 @@ from .common import LayerNorm2d
 # 3. 实例化 PositionEmbeddingRandom 作为位置 embedding 层 pe_layer。
 # 4. 实例化 4个 Embedding 层作为点 prompt 的 embedding,以及 not_a_point_embed 用于非点 prompt。
 # 5. 计算掩码输入大小 mask_input_size 为 (4 * image_embedding_size[0], 4 * image_embedding_size[1])。
-# 6. 实例化 mask_downscaling 为多个 Conv2d 和 LayerNorm2d 层,用于下采样和编码输入遮罩。
+# 6. 实例化 mask_downscaling 为多个 Conv2d 和 LayerNorm2d 层,用于下采样和编码输入掩码。
 # 7. 实例化 no_mask_embed 用于无掩码 prompt 的 embedding。
 class PromptEncoder(nn.Module):
     def __init__(
@@ -108,8 +108,8 @@ class PromptEncoder(nn.Module):
     ) -> torch.Tensor:
         """Embeds point prompts."""
         points = points + 0.5  # Shift to center of pixel
-        # 其中当prompt 不提供bbox时，会在提供point上再追加点[0,0]，label=-1的哑point，
-        # 使用的类别特征embedding为上边的代码的self.not_a_point_embed
+        # 其中当 prompt 不提供 bbox 时，会在提供 point 上再追加点 [0,0]，label=-1 的哑 point，
+        # 使用的类别特征 embedding 为上边的代码的 self.not_a_point_embed
         if pad:
             padding_point = torch.zeros((points.shape[0], 1, 2), device=points.device)
             padding_label = -torch.ones((labels.shape[0], 1), device=labels.device)
@@ -118,11 +118,27 @@ class PromptEncoder(nn.Module):
         point_embedding = self.pe_layer.forward_with_coords(points, self.input_image_size)
         point_embedding[labels == -1] = 0.0
         point_embedding[labels == -1] += self.not_a_point_embed.weight
-        # self.point_embeddings为待学习的embedding
+        # self.point_embeddings 为待学习的embedding
         point_embedding[labels == 0] += self.point_embeddings[0].weight
         point_embedding[labels == 1] += self.point_embeddings[1].weight
         return point_embedding
 
+    # 这个 _embed_boxes 方法的作用是对框 prompt 进行 embedding。它包含:
+    # 1. 将 boxes 中的坐标增加 0.5, 将其移至像素中心。
+    # 2. 将 boxes reshape 为形状为 (-1, 2, 2) 的张量 coords, 包含框的左上角和右下角坐标。
+    # 3. 调用 pe_layer.forward_with_coords 对 coords 进行位置编码,得到 corner_embedding。
+    # 4. 将 corner_embedding 中的第 0 维(左上角)增加 point_embeddings[2] 的权重。
+    # 5. 将 corner_embedding 中的第 1 维(右下角)增加 point_embeddings[3] 的权重。 
+    # 6. 返回 corner_embedding 作为框 prompt 的 embedding。
+    # 所以, 这个 _embed_boxes 方法实现了对框 prompt 的 embedding。它对框的左上角和右下角坐标进行了位置编码,
+    # 并增加相应的角点 Embedding, 可以得到表达丰富的框 prompt embedding。
+    # 这个 _embed_boxes 方法提供了框 prompt embedding 的详细实现, 
+    # 包含位置编码和框角点 Embedding, 是理解框 prompt 表达的基础。
+    # 总的来说,这个 _embed_boxes 方法实现了框 prompt 的 EMBEDDING 过程,
+    # 可以获取表达丰富的框 prompt embedding, 为掩码解码器提供有效的 prompt 输入。
+    # 这个 _embed_boxes 方法与 _embed_points 方法一起,
+    # 实现了对点 prompt 和框 prompt 的完整 embedding 流程,
+    # 可以为掩码解码器提供丰富多样的 prompt 表达, generate高质量的掩码输出。
     def _embed_boxes(self, boxes: torch.Tensor) -> torch.Tensor:
         """Embeds box prompts."""
         boxes = boxes + 0.5  # Shift to center of pixel
@@ -132,11 +148,25 @@ class PromptEncoder(nn.Module):
         corner_embedding[:, 1, :] += self.point_embeddings[3].weight
         return corner_embedding
 
+    # 这个 _embed_masks 方法的作用是对掩码输入进行 embedding 。它包含:
+    # 1. 将 masks 输入 mask_downscaling, 得到 mask_embedding。
+    # 2. 返回 mask_embedding 作为掩码输入的 embedding。
+    # 这个 _embed_masks 方法与 _embed_points 和 _embed_boxes 方法一起,
+    # 实现了对点 prompt、框 prompt 和掩码输入的完整 embedding, 
+    # 可以为掩码解码器提供丰富的多模态 prompt 和上下文表达,推动生成高质量的掩码输出。
     def _embed_masks(self, masks: torch.Tensor) -> torch.Tensor:
         """Embeds mask inputs."""
         mask_embedding = self.mask_downscaling(masks)
         return mask_embedding
 
+    # 这个 _get_batch_size 方法的作用是根据 prompt 输入计算输出的 batch size。它包含:
+    # 1. 如果 points 不为 None,则返回 points[0] 的第 0 维作为 batch size。points[0] 中包含 prompt 坐标。
+    # 2. 如果 boxes 不为 None,则返回 boxes 的第 0 维作为 batch size。boxes 中包含 prompt 框选坐标。
+    # 3. 如果 masks 不为 None,则返回 masks 的第 0 维作为 batch size。masks 中包含 prompt 掩码输入。
+    # 4. 否则返回 1 作为 batch size。
+    # 所以,这个 _get_batch_size 方法根据是否输入了点 prompt、框 prompt或掩码 prompt,返回相应的batch size。
+    # 如果未输入任何 prompt,则返回 1 作为 batch size。
+    # 这个 _get_batch_size 方法提供了根据 prompt 输入推断输出 batch size的 简单实现,是设计基于 prompt 的生成模型的常用技巧。
     def _get_batch_size(
         self,
         points: Optional[Tuple[torch.Tensor, torch.Tensor]],
@@ -155,9 +185,29 @@ class PromptEncoder(nn.Module):
         else:
             return 1
 
+    # 这个 _get_device 方法的作用很简单,就是返回点 prompt 的第一个 Embedding 层 point_embeddings[0]
+    # 的权重参数 weight 所在的设备,作为 PromptEncoder 的设备。
     def _get_device(self) -> torch.device:
         return self.point_embeddings[0].weight.device
 
+
+    # 这个 forward 方法的作用是对各种 prompt 进行 embedding, 并返回稀疏 embedding 和密集 embedding。它包含:
+    # 1. 调用 _get_batch_siz e根据点 prompt、框 prompt和掩码 prompt计算输出的 batch size bs。
+    # 2. 初始化稀疏 embedding为形状为 (bs, 0, self.embed_dim) 的空张量, 设备为 _get_device() 的返回设备。
+    # 3. 如果 points 不为 None,则调用 _embed_points 对点 prompt 进行 embedding, 
+    # 得到 point_embeddings, 并将其拼接到 sparse_embeddings。
+    # 4. 如果 boxes 不为 None,则调用 _embed_boxes 对框 prompt 进行 embedding,
+    # 得到 box_embeddings, 并将其拼接到 sparse_embeddings。
+    # 5. 如果 masks 不为 None, 则调用 _embed_masks 对掩码 prompt 进行 embedding, 得到 dense_embeddings。
+    # 6. 否则, 将 no_mask_embed 的权重 reshape 并扩展为形状为 (bs, -1, self.image_embedding_size[0], self.image_embedding_size[1])
+    # 的张量作为 dense_embeddings。
+    # 7. 返回 sparse_embeddings 和 dense_embeddings 作为稀疏 embedding 和密集 embedding。
+    # 所以,这个 forward 方法实现了对点 prompt、框 prompt 和掩码 prompt 的 embedding, 
+    # 可以得到表达丰富的稀疏 embedding 和密集 embedding, 为下游的解码器提供复杂的 prompt 表达。
+    # 这个 forward 方法提供了 prompt 的完整 embedding 流程,包含对三种 prompt 的处理, 
+    # 可以获得多模态的 prompt 表达,为实现高质量的 prompt 驱动生成模型打下了基础。
+    # 总的来说,这个 forward 方法实现了 prompt 的 ENCODING 过程, 可以获取稀疏 embedding 和密集 embedding
+    # 两种 prompt 表达,为实现高质量的多模态 prompt 驱动生成模型提供支持。
     def forward(
         self,
         points: Optional[Tuple[torch.Tensor, torch.Tensor]],
@@ -201,11 +251,22 @@ class PromptEncoder(nn.Module):
         return sparse_embeddings, dense_embeddings
 
 
+# 这个 PositionEmbeddingRandom 类实现了随机空间频率的位置编码。它包含:
+
+
+
+# 所以,这个PositionEmbeddingRandom类实现了对图像坐标点的随机位置编码。它可以对归一化坐标和非归一化坐标进行编码,为PromptEncoder提供位置编码能力,显著丰富prompt的表达。
+# 这个PositionEmbeddingRandom类提供了随机位置编码的实现,为PromptEncoder类带来位置表达的能力,可以丰富prompt的表达,提高prompt驱动生成的质量。
+# 总的来说,这个PositionEmbeddingRandom类实现了用于prompt位置编码的随机位置编码器,为PromptEncoder类提供位置编码能力,可以丰富prompt的表达,显著提高prompt驱动生成的质量。
 class PositionEmbeddingRandom(nn.Module):
     """
     Positional encoding using random spatial frequencies.
     """
-
+    # __init__ 方法:
+    # 1. 输入参数:
+    #     - num_pos_feats: 位置编码的特征数
+    #     - scale: 位置编码的 scale, 默认为 1.0
+    # 2. 注册 buffer positional_encoding_gaussian_matrix 为形状为 (2, num_pos_feats) 的高斯随机矩阵。
     def __init__(self, num_pos_feats: int = 64, scale: Optional[float] = None) -> None:
         super().__init__()
         if scale is None or scale <= 0.0:
@@ -215,6 +276,12 @@ class PositionEmbeddingRandom(nn.Module):
             scale * torch.randn((2, num_pos_feats)),
         )
 
+    # _pe_encoding方法:
+    # 1. 输入参数 coords 为归一化到 [0,1] 的坐标点。
+    # 2. 将 coords 映射到 [-1,1] 区间。
+    # 3. 将 coords 与 positional_encoding_gaussian_matrix 相乘。
+    # 4. 将结果乘以 2*π。
+    # 5. 拼接 sin 和 cos 作为位置编码,返回形状为 (d_1, ..., d_n, C) 的张量。
     def _pe_encoding(self, coords: torch.Tensor) -> torch.Tensor:
         """Positionally encode points that are normalized to [0,1]."""
         # assuming coords are in [0, 1]^2 square and have d_1 x ... x d_n x 2 shape
@@ -224,6 +291,12 @@ class PositionEmbeddingRandom(nn.Module):
         # outputs d_1 x ... x d_n x C shape
         return torch.cat([torch.sin(coords), torch.cos(coords)], dim=-1)
 
+    # forward 方法:
+    # 1. 输入参数 size 为 (H, W) 的网格大小。
+    # 2. 生成一个形状为 (H, W) 的网格,并获得 y 和 x 轴的顺序编码。
+    # 3. 归一化 y_embed 和 x_embed 到 [0,1] 区间。
+    # 4. 调用 _pe_encoding 对 x_embed 和 y_embed 进行位置编码。
+    # 5. 返回位置编码,形状为 (C, H, W) 。
     def forward(self, size: Tuple[int, int]) -> torch.Tensor:
         """Generate positional encoding for a grid of the specified size."""
         h, w = size
@@ -237,6 +310,11 @@ class PositionEmbeddingRandom(nn.Module):
         pe = self._pe_encoding(torch.stack([x_embed, y_embed], dim=-1))
         return pe.permute(2, 0, 1)  # C x H x W
 
+    # forward_with_coords方法:
+    # 1. 输入参数 coords_input 为未归一化到 [0,1] 的坐标, image_size 为 (H, W) 的图像大小。
+    # 2. 归一化 coords_input 到 [0,1] 区间。
+    # 3. 调用 _pe_encoding 对 coords 进行位置编码。
+    # 4. 返回位置编码,形状为 (B, N, C)。
     def forward_with_coords(
         self, coords_input: torch.Tensor, image_size: Tuple[int, int]
     ) -> torch.Tensor:

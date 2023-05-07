@@ -148,10 +148,20 @@ class MaskDecoder(nn.Module):
 
         return masks, iou_pred
 
-
+# 这个 MLP 类实现了多层感知机 (Multi-Layer Perceptron)。
 # Lightly adapted from
 # https://github.com/facebookresearch/MaskFormer/blob/main/mask_former/modeling/transformer/transformer_predictor.py # noqa
 class MLP(nn.Module):
+    # __init__方法:
+    # 1. 输入参数:
+    #     - input_dim: 输入维度
+    #     - hidden_dim: 隐藏层维度
+    #     - output_dim: 输出维度
+    #     - num_layers: 隐藏层数
+    #     - sigmoid_output: 是否使用 sigmoid 激活函数
+    # 2. 记录 num_layers 和 h 为 num_layers-1 个隐藏层维度。
+    # 3. 实例化 nn.ModuleList 由 nn.Linear 组成的列表,用于实现 MLP 的线性变换。
+    # 4. 记录 sigmoid_output 以决定是否使用 sigmoid 激活函数。
     def __init__(
         self,
         input_dim: int,
@@ -168,6 +178,11 @@ class MLP(nn.Module):
         )
         self.sigmoid_output = sigmoid_output
 
+    # forward 方法: 
+    # 1. 对输入 x 重复 num_layers 次线性变换和激活。
+    # 2. 最后一层只使用线性变换,不使用激活函数。
+    # 3. 如果 sigmoid_output 为 True, 使用 sigmoid 激活函数。
+    # 4. 返回 MLP 的输出。
     def forward(self, x):
         for i, layer in enumerate(self.layers):
             x = F.relu(layer(x)) if i < self.num_layers - 1 else layer(x)
