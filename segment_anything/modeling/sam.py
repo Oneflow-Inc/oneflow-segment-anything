@@ -14,11 +14,21 @@ from .image_encoder import ImageEncoderViT
 from .mask_decoder import MaskDecoder
 from .prompt_encoder import PromptEncoder
 
-
+# 这个 Sam 类实现了根据图像和输入提示预测对象掩码的模型。
 class Sam(nn.Module):
     mask_threshold: float = 0.0
     image_format: str = "RGB"
 
+    # __init__ 方法:
+    # 1. 输入参数:
+    #     - image_encoder: 用于将图像编码为图像 embedding 的骨干网络,用于有效地预测掩码。
+    #     - prompt_encoder: 用于编码各种类型的输入提示。
+    #     - mask_decoder: 根据图像 embedding 和编码的提示预测掩码。
+    #     - pixel_mean: 输入图像像素的归一化均值。
+    #     - pixel_std: 输入图像像素的归一化标准差。
+    # 2. 调用父类初始化。
+    # 3. 记录 image_encoder、prompt_encoder 和 mask_decoder。
+    # 4. 使用 register_buffer 注册 pixel_mean 和 pixel_std。
     def __init__(
         self,
         image_encoder: ImageEncoderViT,
@@ -46,10 +56,34 @@ class Sam(nn.Module):
         self.register_buffer("pixel_mean", torch.Tensor(pixel_mean).view(-1, 1, 1), False)
         self.register_buffer("pixel_std", torch.Tensor(pixel_std).view(-1, 1, 1), False)
 
+    # 这个 device 属性返回 pixel_mean 的设备类型。
+    # pixel_mean 在 __init__ 方法中使用 register_buffer 注册为 buffer, 它的设备类型由输入图像的设备类型决定。
+    # 所以,这个 device 属性返回模型中用于图像处理的设备类型,通常为CPU或GPU。
     @property
     def device(self) -> Any:
         return self.pixel_mean.device
 
+    # 这个 forward 方法实现了根据提供的图像和提示端到端预测掩码。它包含:
+    # 1. 输入参数:
+    #     - batched_input: 输入图像列表,每个图像是一个字典,包含:
+    #         - 'image': 输入图像,形状为 3xHxW, 已经转换为模型输入。
+    #         - 'original_size': 转换前的原始图像大小, 形状为 (H, W)。
+    #         - 'point_coords': 批量点提示,形状为 BxNx2, 已经转换为模型输入空间。
+    #         - 'point_labels': 批量点提示标签,形状为 BxN。
+    #         - 'boxes': 批量框提示,形状为 Bx4, 已经转换为模型输入空间。
+    #         - 'mask_inputs': 批量掩码输入, 形状为 Bx1xHxW。
+    #     - multimask_output: 模型是否应该预测多个遮挡掩码, 或者返回一个掩码。
+    # 2. 使用 torch.stack 将所有图像堆叠在一起,并使用 image_encoder 获得其 image_embeddings。
+    # 3. 对每个图像记录和其对应的 image_embedding:
+    #     - 如果有 'point_coords' ,则 points 为其值，否则 points 为 None。
+    #     - 使用 prompt_encoder 获得 sparse_embeddings 和 dense_embeddings。
+    #     - 使用 mask_decoder 获得 low_res_masks 和 iou_predictions。
+    #     - 使用 postprocess_masks 将 low_res_masks 处理为 masks, masks的值超过 mask_threshold 则为 1,否则为 0。
+    # 4. 将每个图像的预测结果组织为字典, 组成列表输出。
+    # 5. 返回输出列表。
+    # 所以,这个 forward 方法实现了根据输入图像和各种类型的提示(点提示、框提示和掩码提示)预测掩码的完整流程。
+    # 它先使用 image_encoder 提取图像特征, 再使用 prompt_encoder 对不同类型的提示进行编码,
+    # 最后使用 mask_decoder 预测掩码和掩码质量, 并使用 postprocess_masks 进行后处理,输出最终掩码预测结果。
     @torch.no_grad()
     def forward(
         self,
@@ -130,6 +164,17 @@ class Sam(nn.Module):
             )
         return outputs
 
+    # 这个 postprocess_masks 方法实现了掩码的后处理, 包含去除填充和将掩码放大到原始图像大小两步。
+    # 1. 输入参数:
+    #     - masks: 从 mask_decoder 输出的批量掩码,形状为 BxCxHxW。
+    #     - input_size: 输入图像大小,形状为 (H, W)。用于去除填充。
+    #     - original_size: 调整大小前的原始图像大小,形状为 (H, W)。
+    # 2. 使用 F.interpolate 将 masks 放大到 image_encoder.img_size x image_encoder.img_size。
+    # 3. 使用 masks[..., : input_size[0], : input_size[1]] 去除 masks 中的填充。
+    # 4. 使用 F.interpolate 再将 masks 放大到 original_size 大小。
+    # 5. 返回放大后的 masks。
+    # 所以, 这个 postprocess_masks 方法实现了掩码的后处理,包含去除填充和恢复原始大小两步。
+    # 它使模型最终输出与原始输入图像大小相匹配的掩码, 为掩码的实际应用提供方便。
     def postprocess_masks(
         self,
         masks: torch.Tensor,
@@ -161,6 +206,15 @@ class Sam(nn.Module):
         masks = F.interpolate(masks, original_size, mode="bilinear", align_corners=False)
         return masks
 
+    # 这个 preprocess 方法实现了图像预处理,包含归一化像素值和填充为方形输入两步。
+    # 1. 输入参数 x 为输入图像, 形状为 CxHxW。
+    # 2. 使用记录在 __init__ 中的 pixel_mean 和 pixel_std 对图像进行归一化。
+    # 3. 计算输入图像的高 h和宽 w。
+    # 4. 计算需要填充的高 padh 和宽 padw, 使图像变为 image_encoder.img_size x image_encoder.img_size。
+    # 5. 使用 F.pad 对图像进行填充。
+    # 6. 返回预处理后的图像 x。
+    # 所以,这个 preprocess 方法实现了图像归一化和填充两步预处理。
+    # 它使输入图像适合 image_encoder 的输入要求, 为后续处理提供标准化的输入。
     def preprocess(self, x: torch.Tensor) -> torch.Tensor:
         """Normalize pixel values and pad to a square input."""
         # Normalize colors
