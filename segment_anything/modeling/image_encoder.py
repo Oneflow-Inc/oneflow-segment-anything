@@ -312,8 +312,8 @@ class Attention(nn.Module):
 # 5. 返回windows和原来的高度和宽度(包含padding)Hp和Wp。
 # 所以,这个 window_partition 函数的作用是,将输入的图像划分为 window_size * window_size 的 patch,
 # 并将所有的 patch 打平, 输出可以输入到 transformer encoder 中的 token 序列。
-# 这个函数实现了将二维图像转化为一维token序列的过程,是transformer用于处理图像的一个关键步骤。
-# 通过这个函数,图像可以被transformer encoder所处理,就像处理文本序列一样。
+# 这个函数实现了将二维图像转化为一维 token 序列的过程,是 transformer 用于处理图像的一个关键步骤。
+# 通过这个函数,图像可以被 transformer encoder 所处理,就像处理文本序列一样。
 def window_partition(x: torch.Tensor, window_size: int) -> Tuple[torch.Tensor, Tuple[int, int]]:
     """
     Partition into non-overlapping windows with padding if needed.
@@ -479,10 +479,10 @@ def add_decomposed_rel_pos(
     return attn
 
 
-# 这个PatchEmbed类定义了ViT的patch embedding层。它包含:
-# 1. __init__: 初始化,设置卷积层的kernel size、stride、padding以及输入通道数和embedding维度。
-# 2. proj: 这是一个卷积层,用于将输入图像划分为patch,并获得每个patch的embedding。
-# 3. forward: 前向传播过程。首先通过proj卷积层获得patch embedding,然后将维度从[B, C, H, W]转置成[B, H, W, C]。
+# 这个 PatchEmbed 类定义了 ViT 的 patch embedding 层。它包含:
+# 1. __init__: 初始化,设置卷积层的 kernel size、stride、padding以 及输入通道数和 embedding 维度。
+# 2. proj: 这是一个卷积层,用于将输入图像划分为 patch, 并获得每个 patch 的 embedding。
+# 3. forward: 前向传播过程。首先通过 proj 卷积层获得 patch embedding ,然后将维度从 [B, C, H, W] 转置成 [B, H, W, C]。
 
 class PatchEmbed(nn.Module):
     """
